@@ -1,755 +1,876 @@
-class FormatMismatchError extends Error {
+#!/usr/bin/env node
 
-constructor() {
-    super('Format mismatch');
+const fs = require('fs');
+const path = require('path');
+
+function clone(obj) {
+    return JSON.parse(JSON.stringify(obj));
 }
 
-}
-class DimensionMismatchError extends Error {
+// -----------------------------------------------------------------------------
+// ------------------------------- VOLUME UTILS --------------------------------
+//
+// node.exe .\raw2bvp.js -m default -i skull.raw -d 256x256x256 -f R8 -G true -m chan2 -i skull.raw -d 256x256x256 -f R8 -G true -o out.bvp
 
-constructor() {
-    super('Dimension mismatch');
-}
+//  node.exe .\raw2bvp.js -m 1 -i ts_16_bin8_lp80A_inv_Background_u8bit.raw -d 512x720x224 -f R8 -G true -m 2 -i ts_16_bin8_lp80A_inv_Inner_u8bit.raw -d 512x720x224 -f R8 -G true -m 3 -i ts_16_bin8_lp80A_inv_Membrane_u8bit.raw -d 512x720x224 -f R8 -G true -m 4 -i ts_16_bin8_lp80A_inv_Spikes_u8bit.raw -d 512x720x224 -f R8 -G true  -o sai_ts_16_bin8.bvp
+//
+// -----------------------------------------------------------------------------
 
-}
-// #link DimensionMismatchError
-
-class vec {
-
-static const(length, x) { return new Array(length).fill(x); }
-static zeros(length)    { return vec.const(length, 0); }
-static ones(length)     { return vec.const(length, 1); }
-
-static clone(a) { return [...a]; }
-static length(a) { return Math.hypot(...a); }
-
-static unaryOp(a, op) {
-    return a.map(op);
+function totalCount(dim) {
+    return dim.width * dim.height * dim.depth;
 }
 
-static binaryOp(a, b, op) {
-    if (a.length !== b.length) {
-        throw new DimensionMismatchError();
-    }
-    const out = vec.zeros(a.length);
-    for (let i = 0; i < a.length; i++) {
-        out[i] = op(a[i], b[i]);
-    }
-    return out;
+function index(idx, dims, offset) {
+    offset = offset || {
+        x: 0,
+        y: 0,
+        z: 0
+    };
+    return (idx.x + offset.x)
+         + (idx.y + offset.y) * dims.width
+         + (idx.z + offset.z) * dims.width * dims.height;
 }
 
-static all(a)    { return a.every(a => a); }
-static any(a)    { return a.some(a => a); }
-static none(a)   { return a.every(a => !a); }
-
-static floor(a)  { return vec.unaryOp(a, Math.floor); }
-static ceil(a)   { return vec.unaryOp(a, Math.ceil); }
-static round(a)  { return vec.unaryOp(a, Math.round); }
-static add(a, b) { return vec.binaryOp(a, b, (a, b) => a + b); }
-static sub(a, b) { return vec.binaryOp(a, b, (a, b) => a - b); }
-static mul(a, b) { return vec.binaryOp(a, b, (a, b) => a * b); }
-static div(a, b) { return vec.binaryOp(a, b, (a, b) => a / b); }
-static mod(a, b) { return vec.binaryOp(a, b, (a, b) => a % b); }
-static min(a, b) { return vec.binaryOp(a, b, Math.min); }
-static max(a, b) { return vec.binaryOp(a, b, Math.max); }
-
-static eq(a, b)  { return vec.binaryOp(a, b, (a, b) => a === b); }
-static neq(a, b) { return vec.binaryOp(a, b, (a, b) => a !== b); }
-static approx(a, b, eps) { return vec.binaryOp(a, b, (a, b) => Math.abs(a - b < eps)); }
-static lt(a, b)  { return vec.binaryOp(a, b, (a, b) => a < b); }
-static gt(a, b)  { return vec.binaryOp(a, b, (a, b) => a > b); }
-static leq(a, b) { return vec.binaryOp(a, b, (a, b) => a <= b); }
-static geq(a, b) { return vec.binaryOp(a, b, (a, b) => a >= b); }
-
-static mulElements(a) {
-    return a.reduce((x, y) => x * y);
-}
-
-static sumElements(a) {
-    return a.reduce((x, y) => x + y);
-}
-
-static dot(a, b) {
-    return vec.sumElements(vec.mul(a, b));
-}
-
-static linearIndex(index, dimensions) {
-    const dims = vec.clone(dimensions);
-    let scale = 1;
-    for (let i = 0; i < dims.length; i++) {
-        dims[i] = scale;
-        scale *= dimensions[i];
-    }
-    return vec.sumElements(vec.mul(index, dims));
-}
-
-static *lexi(a) {
-    const b = new Array(a.length).fill(0);
-    const count = a.reduce((a, b) => a * b);
-    for (let j = 0; j < count; j++) {
-        yield [...b];
-        for (let i = 0; i < b.length; i++) {
-            b[i]++;
-            if (b[i] >= a[i]) {
-                b[i] = 0;
-            } else {
-                break;
+function extractBlock(volumeData, volumeDimensions, blockOffset, blockDimensions, bytesPerVoxel) {
+    let blockData = Buffer.allocUnsafe(totalCount(blockDimensions) * bytesPerVoxel);
+    for (let k = 0; k < blockDimensions.depth; k++) {
+        for (let j = 0; j < blockDimensions.height; j++) {
+            for (let i = 0; i < blockDimensions.width; i++) {
+                let idx = {
+                    x: i,
+                    y: j,
+                    z: k
+                };
+                let blockIndex = index(idx, blockDimensions);
+                let volumeIndex = index(idx, volumeDimensions, blockOffset);
+                for (let b = 0; b < bytesPerVoxel; b++) {
+                    blockData[blockIndex * bytesPerVoxel + b] = volumeData[volumeIndex * bytesPerVoxel + b];
+                }
             }
         }
     }
+    return blockData;
 }
 
-}
-class NotImplementedError extends Error {
-
-constructor() {
-    super('Not implemented');
-}
-
-}
-// #link /utils/NotImplementedError
-// #link /utils/vec
-
-class AbstractFormat {
-
-allocateMicroblocks(microblockCount) {
-    if (microblockCount < 0) {
-        throw new Error('Negative microblock count');
+function combineData(specs) {
+    if (specs.length === 0) {
+        return null;
     }
 
-    return new ArrayBuffer(this.microblockSize * microblockCount);
-}
-
-allocateBytes(bytes) {
-    if (bytes < 0) {
-        throw new Error('Negative bytes');
-    }
-    if (bytes % this.microblockSize !== 0) {
-        throw new Error('Not an integer number of microblocks');
-    }
-
-    const microblockCount = bytes / this.microblockSize;
-    return this.allocateMicroblocks(microblockCount);
-}
-
-allocateDimensions(dimensions) {
-    if (vec.any(vec.lt(dimensions, vec.zeros(dimensions.length)))) {
-        throw new Error('Negative dimensions');
-    }
-    if (vec.any(vec.mod(dimensions, this.microblockDimensions))) {
-        throw new Error('Not an integer number of microblocks');
-    }
-
-    const microblockCountVec = vec.div(dimensions, this.microblockDimensions);
-    const microblockCount = vec.mulElements(microblockCountVec);
-    return this.allocateMicroblocks(microblockCount);
-}
-
-get family() {
-    throw new NotImplementedError();
-}
-
-get microblockSize() {
-    throw new NotImplementedError();
-}
-
-get microblockDimensions() {
-    throw new NotImplementedError();
-}
-
-}
-// #link AbstractFormat
-
-class BitmapFormat extends AbstractFormat {
-
-get family() {
-    return 'bitmap';
-}
-
-get microblockSize() {
-    return 1;
-}
-
-get microblockDimensions() {
-    return [2, 2, 2];
-}
-
-}
-// #link AbstractFormat
-
-class MonoFormat extends AbstractFormat {
-
-constructor(count, size, type) {
-    super();
-    this.count = count;
-    this.size = size;
-    this.type = type;
-}
-
-get family() {
-    return 'mono';
-}
-
-get microblockSize() {
-    return this.count * this.size;
-}
-
-get microblockDimensions() {
-    return [1, 1, 1];
-}
-
-}
-// #link AbstractFormat
-
-class ASTCFormat extends AbstractFormat {
-
-constructor(microblockDimensions) {
-    super();
-    this._microblockDimensions = microblockDimensions;
-}
-
-get family() {
-    return 'astc';
-}
-
-get microblockSize() {
-    16;
-}
-
-get microblockDimensions() {
-    return this._microblockDimensions;
-}
-
-}
-// #link /utils/FormatMismatchError
-// #link /utils/vec
-// #link /formats
-
-class Block {
-
-constructor(dimensions, format, data = null) {
-    this.dimensions = dimensions;
-    this.format = format;
-
-    this.data = data !== null ? data : format.allocateDimensions(dimensions);
-}
-
-get(start, end) {
-    const extent = vec.sub(end, start);
-
-    if (vec.any(vec.gt(start, end))) {
-        throw new Error('Start greater than end');
-    }
-    if (vec.any(vec.lt(start, vec.zeros(start.length)))) {
-        throw new Error('Start out of bounds');
-    }
-    if (vec.any(vec.gt(end, this.dimensions))) {
-        throw new Error('End out of bounds');
-    }
-    if (vec.any(vec.mod(start, this.format.microblockDimensions))) {
-        throw new Error('Not on microblock boundary');
-    }
-    if (vec.any(vec.mod(extent, this.format.microblockDimensions))) {
-        throw new Error('Not an integer number of microblocks');
-    }
-
-    const { microblockSize, microblockDimensions } = this.format;
-    const microblockStart = vec.div(start, microblockDimensions);
-    const microblockEnd = vec.div(end, microblockDimensions);
-    const microblockCropExtent = vec.div(extent, microblockDimensions);
-    const microblockFullExtent = vec.div(this.dimensions, microblockDimensions);
-
-    const block = new Block(extent, this.format);
-    const srcBytes = new Uint8Array(this.data);
-    const dstBytes = new Uint8Array(block.data);
-    for (const localMicroblockIndex of vec.lexi(microblockCropExtent)) {
-        const globalMicroblockIndex = vec.add(localMicroblockIndex, microblockStart);
-        const srcMicroblockIndex = vec.linearIndex(globalMicroblockIndex, microblockFullExtent);
-        const dstMicroblockIndex = vec.linearIndex(localMicroblockIndex, microblockCropExtent);
-        for (let i = 0; i < microblockSize; i++) {
-            dstBytes[i + dstMicroblockIndex * microblockSize] = srcBytes[i + srcMicroblockIndex * microblockSize];
-        }
-    }
-    return block;
-}
-
-set(offset, block) {
-    const start = offset;
-    const end = vec.add(offset, block.dimensions);
-    const extent = vec.sub(end, start);
-
-    if (this.format !== block.format) {
-        throw new FormatMismatchError();
-    }
-    if (vec.any(vec.gt(start, end))) {
-        throw new Error('Start greater than end');
-    }
-    if (vec.any(vec.lt(start, vec.zeros(start.length)))) {
-        throw new Error('Start out of bounds');
-    }
-    if (vec.any(vec.gt(end, this.dimensions))) {
-        throw new Error('End out of bounds');
-    }
-    if (vec.any(vec.mod(start, this.format.microblockDimensions))) {
-        throw new Error('Not on microblock boundary');
-    }
-    if (vec.any(vec.mod(extent, this.format.microblockDimensions))) {
-        throw new Error('Not an integer number of microblocks');
-    }
-
-    const { microblockSize, microblockDimensions } = this.format;
-    const microblockStart = vec.div(start, microblockDimensions);
-    const microblockEnd = vec.div(end, microblockDimensions);
-    const microblockCropExtent = vec.div(extent, microblockDimensions);
-    const microblockFullExtent = vec.div(this.dimensions, microblockDimensions);
-
-    const srcBytes = new Uint8Array(block.data);
-    const dstBytes = new Uint8Array(this.data);
-    for (const localMicroblockIndex of vec.lexi(microblockCropExtent)) {
-        const globalMicroblockIndex = vec.add(localMicroblockIndex, microblockStart);
-        const srcMicroblockIndex = vec.linearIndex(localMicroblockIndex, microblockCropExtent);
-        const dstMicroblockIndex = vec.linearIndex(globalMicroblockIndex, microblockFullExtent);
-        for (let i = 0; i < microblockSize; i++) {
-            dstBytes[i + dstMicroblockIndex * microblockSize] = srcBytes[i + srcMicroblockIndex * microblockSize];
-        }
-    }
-    return this;
-}
-
-}
-class ParserFactory {
-
-static string(x) { return x; }
-static number(x) { return Number(x); }
-static bool(x) { return x === 'true'; }
-static json(x) { return JSON.parse(x); }
-static dimensions(x) { return x.split('x').map(Number); }
-
-};
-// #link ParserFactory
-
-class ArgumentParser {
-
-constructor(spec) {
-    this.spec = spec;
-}
-
-parse(args) {
-    const params = {};
-    for (let i = 0; i < args.length; i++) {
-        const arg = this.spec.find(arg => {
-            return `-${arg.short}` === args[i] || `--${arg.long}` === args[i];
-        });
-        if (!arg) {
-            throw new Error(`Unrecognized parameter: ${args[i]}`);
-        }
-        const parser = ParserFactory[arg.parser];
-        if (!parser) {
-            throw new Error(`Unrecognized parser: ${arg.parser}`);
-        }
-        const value = parser(args[++i]);
-        params[arg.long] = value;
-    }
-    for (const arg of this.spec) {
-        if (arg.required && !(arg.long in params)) {
-            throw new Error(`Missing required parameter: --${arg.long} (-${arg.short})`);
-        }
-    }
-    return params;
-}
-
-printShortHelp() {
-    for (const arg of this.spec) {
-        console.log(`-${arg.short}\t--${arg.long}\t${arg.shortDescription}`);
-    }
-}
-
-}
-// #link /formats
-
-class FormatFactory {
-
-static create(options) {
-    switch (options?.family) {
-        case 'mono': return FormatFactory.createMono(options);
-        case 'astc': return FormatFactory.createASTC(options);
-        default: throw new Error(`Unrecognized format family: ${options?.family}`);
-    }
-}
-
-static createMono(options) {
-    const { count, size, type } = options;
-
-    if (count <= 0) {
-        throw new Error('Mono component count must be positive');
-    }
-    if (size <= 0) {
-        throw new Error('Mono component size must be positive');
-    }
-    if (!['u', 'i', 'f'].includes(type)) {
-        throw new Error('Mono component type must be u, i, or f');
-    }
-
-    return new MonoFormat(count, size, type);
-}
-
-static createASTC(options) {
-    const { microblockDimensions } = options;
-
-    return new ASTCFormat(microblockDimensions);
-}
-
-}
-const PRIME32_1 = 2654435761;
-const PRIME32_2 = 2246822519;
-const PRIME32_3 = 3266489917;
-const PRIME32_4 = 668265263;
-const PRIME32_5 = 374761393;
-
-/**
- *
- * @param buffer - byte array or string
- * @param seed - optional seed (32-bit unsigned);
- */
-function xxHash32(buffer, seed = 0) {
-    const b = buffer;
-
-    /*
-        Step 1. Initialize internal accumulators
-        Each accumulator gets an initial value based on optional seed input. Since the seed is optional, it can be 0.
-
-        ```
-            u32 acc1 = seed + PRIME32_1 + PRIME32_2;
-            u32 acc2 = seed + PRIME32_2;
-            u32 acc3 = seed + 0;
-            u32 acc4 = seed - PRIME32_1;
-        ```
-        Special case : input is less than 16 bytes
-        When input is too small (< 16 bytes), the algorithm will not process any stripe. Consequently, it will not
-        make use of parallel accumulators.
-
-        In which case, a simplified initialization is performed, using a single accumulator :
-
-        u32 acc  = seed + PRIME32_5;
-        The algorithm then proceeds directly to step 4.
-    */
-
-    let acc = (seed + PRIME32_5) & 0xffffffff;
     let offset = 0;
-
-    if (b.length >= 16) {
-        const accN = [
-            (seed + PRIME32_1 + PRIME32_2) & 0xffffffff,
-            (seed + PRIME32_2) & 0xffffffff,
-            (seed + 0) & 0xffffffff,
-            (seed - PRIME32_1) & 0xffffffff,
-        ];
-
-        /*
-            Step 2. Process stripes
-            A stripe is a contiguous segment of 16 bytes. It is evenly divided into 4 lanes, of 4 bytes each.
-            The first lane is used to update accumulator 1, the second lane is used to update accumulator 2, and so on.
-
-            Each lane read its associated 32-bit value using little-endian convention.
-
-            For each {lane, accumulator}, the update process is called a round, and applies the following formula :
-
-            ```
-            accN = accN + (laneN * PRIME32_2);
-            accN = accN <<< 13;
-            accN = accN * PRIME32_1;
-            ```
-
-            This shuffles the bits so that any bit from input lane impacts several bits in output accumulator.
-            All operations are performed modulo 2^32.
-
-            Input is consumed one full stripe at a time. Step 2 is looped as many times as necessary to consume
-            the whole input, except the last remaining bytes which cannot form a stripe (< 16 bytes). When that
-            happens, move to step 3.
-        */
-
-        const b = buffer;
-        const limit = b.length - 16;
-        let lane = 0;
-        for (offset = 0; (offset & 0xfffffff0) <= limit; offset += 4) {
-            const i = offset;
-            const laneN0 = b[i + 0] + (b[i + 1] << 8);
-            const laneN1 = b[i + 2] + (b[i + 3] << 8);
-            const laneNP = laneN0 * PRIME32_2 + ((laneN1 * PRIME32_2) << 16);
-            let acc = (accN[lane] + laneNP) & 0xffffffff;
-            acc = (acc << 13) | (acc >>> 19);
-            const acc0 = acc & 0xffff;
-            const acc1 = acc >>> 16;
-            accN[lane] = (acc0 * PRIME32_1 + ((acc1 * PRIME32_1) << 16)) & 0xffffffff;
-            lane = (lane + 1) & 0x3;
-        }
-
-        /*
-            Step 3. Accumulator convergence
-            All 4 lane accumulators from previous steps are merged to produce a single remaining accumulator
-            of same width (32-bit). The associated formula is as follows :
-
-            ```
-            acc = (acc1 <<< 1) + (acc2 <<< 7) + (acc3 <<< 12) + (acc4 <<< 18);
-            ```
-        */
-        acc =
-            (((accN[0] << 1) | (accN[0] >>> 31)) +
-                ((accN[1] << 7) | (accN[1] >>> 25)) +
-                ((accN[2] << 12) | (accN[2] >>> 20)) +
-                ((accN[3] << 18) | (accN[3] >>> 14))) &
-            0xffffffff;
+    let stride = 0;
+    for (let spec of specs) {
+        spec.offset = offset;
+        offset += spec.bytes;
+        stride += spec.bytes;
+        spec.count = spec.data.length / spec.bytes;
     }
 
-    /*
-        Step 4. Add input length
-        The input total length is presumed known at this stage. This step is just about adding the length to
-        accumulator, so that it participates to final mixing.
-
-        ```
-        acc = acc + (u32)inputLength;
-        ```
-    */
-    acc = (acc + buffer.length) & 0xffffffff;
-
-    /*
-        Step 5. Consume remaining input
-        There may be up to 15 bytes remaining to consume from the input. The final stage will digest them according
-        to following pseudo-code :
-        ```
-        while (remainingLength >= 4) {
-            lane = read_32bit_little_endian(input_ptr);
-            acc = acc + lane * PRIME32_3;
-            acc = (acc <<< 17) * PRIME32_4;
-            input_ptr += 4; remainingLength -= 4;
-        }
-        ```
-        This process ensures that all input bytes are present in the final mix.
-    */
-
-    const limit = buffer.length - 4;
-    for (; offset <= limit; offset += 4) {
-        const i = offset;
-        const laneN0 = b[i + 0] + (b[i + 1] << 8);
-        const laneN1 = b[i + 2] + (b[i + 3] << 8);
-        const laneP = laneN0 * PRIME32_3 + ((laneN1 * PRIME32_3) << 16);
-        acc = (acc + laneP) & 0xffffffff;
-        acc = (acc << 17) | (acc >>> 15);
-        acc = ((acc & 0xffff) * PRIME32_4 + (((acc >>> 16) * PRIME32_4) << 16)) & 0xffffffff;
+    const count = specs[0].count;
+    if (!specs.every(v => v.count === count)) {
+        throw new Error('Cannot combine data');
     }
 
-    /*
-        ```
-        while (remainingLength >= 1) {
-            lane = read_byte(input_ptr);
-            acc = acc + lane * PRIME32_5;
-            acc = (acc <<< 11) * PRIME32_1;
-            input_ptr += 1; remainingLength -= 1;
-        }
-        ```
-    */
+    let data = Buffer.allocUnsafe(count * stride);
 
-    for (; offset < b.length; ++offset) {
-        const lane = b[offset];
-        acc = acc + lane * PRIME32_5;
-        acc = (acc << 11) | (acc >>> 21);
-        acc = ((acc & 0xffff) * PRIME32_1 + (((acc >>> 16) * PRIME32_1) << 16)) & 0xffffffff;
+    for (let i = 0; i < count; i++) {
+        for (let spec of specs) {
+            for (let b = 0; b < spec.bytes; b++) {
+                data[i * stride + spec.offset + b] = spec.data[i * spec.bytes + b];
+            }
+        }
     }
 
-    /*
-        Step 6. Final mix (avalanche)
-        The final mix ensures that all input bits have a chance to impact any bit in the output digest,
-        resulting in an unbiased distribution. This is also called avalanche effect.
-        ```
-        acc = acc xor (acc >> 15);
-        acc = acc * PRIME32_2;
-        acc = acc xor (acc >> 13);
-        acc = acc * PRIME32_3;
-        acc = acc xor (acc >> 16);
-        ```
-    */
-
-    acc = acc ^ (acc >>> 15);
-    acc = (((acc & 0xffff) * PRIME32_2) & 0xffffffff) + (((acc >>> 16) * PRIME32_2) << 16);
-    acc = acc ^ (acc >>> 13);
-    acc = (((acc & 0xffff) * PRIME32_3) & 0xffffffff) + (((acc >>> 16) * PRIME32_3) << 16);
-    acc = acc ^ (acc >>> 16);
-
-    // turn any negatives back into a positive number;
-    return acc < 0 ? acc + 4294967296 : acc;
-}
-const SAF_SIGNATURE = Uint8Array.from([0xab, 0x53, 0x41, 0x46, 0x20, 0x31, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-function safEncode(files) {
-    const manifest = files.map(({ path, mime, data }) => ({
-        path,
-        mime,
-        size: data.byteLength,
-    }));
-    const manifestBuffer = new TextEncoder().encode(JSON.stringify(manifest));
-
-    const manifestSizeBuffer = new Uint8Array(4);
-    new DataView(manifestSizeBuffer.buffer).setUint32(0, manifestBuffer.byteLength, true);
-
-    const parts = [
-        SAF_SIGNATURE,
-        manifestSizeBuffer,
-        manifestBuffer,
-        ...files.map(({ data }) => data),
-    ];
-
-    const safSize = parts.reduce((size, { byteLength }) => size + byteLength, 0);
-    const saf = new Uint8Array(safSize);
-    parts.reduce((saf, part) => (saf.set(part), saf).subarray(part.byteLength), saf);
-
-    return saf;
+    return data;
 }
 
-function safDecode(saf) {
-    for (let i = 0; i < SAF_SIGNATURE.length; i++) {
-        if (saf[i] !== SAF_SIGNATURE[i]) {
-            throw new Error('SAF signature mismatch');
+// -----------------------------------------------------------------------------
+// --------------------------------- CRC UTILS ---------------------------------
+// -----------------------------------------------------------------------------
+
+function generateCrc32Table() {
+    let table = new Int32Array(256);
+    for (let i = 0; i < table.length; i++) {
+        let n = i;
+        for (let j = 0; j < 8; j++) {
+            if (n & 1) {
+                n = (n >>> 1) ^ 0xedb88320;
+            } else {
+                n >>>= 1;
+            }
+        }
+        table[i] = n;
+    }
+    return table;
+}
+
+const CRC32_TABLE = generateCrc32Table();
+
+function crc32(data) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < data.length; i++) {
+        crc = CRC32_TABLE[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
+    }
+    return ~crc;
+}
+
+// -----------------------------------------------------------------------------
+// --------------------------------- ZIP UTILS ---------------------------------
+// -----------------------------------------------------------------------------
+
+class SerialBuffer {
+
+    static get START_SIZE() {
+        return 128;
+    }
+
+    constructor(buffer) {
+        this.position = 0;
+        this.bigEndian = false;
+
+        if (buffer) {
+            this.buffer = buffer;
+            this.size = this.buffer.length;
+        } else {
+            this.size = SerialBuffer.START_SIZE;
+            this.buffer = Buffer.allocUnsafe(this.size);
         }
     }
-    saf = saf.subarray(SAF_SIGNATURE.length);
-    const manifestSize = new DataView(saf).getUint32(0, true);
-    saf = saf.subarray(4);
-    const manifest = JSON.parse(new TextDecoder().decode(saf.subarray(0, manifestSize)));
-    saf = saf.subarray(manifestSize);
-    return manifest.map(({ path, mime, size }) => ({
-        path,
-        mime,
-        data: (saf = saf.subarray(0, size)),
-    }));
+
+    resizeIfNeeded(toAdd) {
+        let newSize = this.size;
+        while (this.position + toAdd > newSize) {
+            newSize = newSize * 2;
+        }
+        if (newSize > this.size) {
+            let newBuffer = Buffer.allocUnsafe(newSize);
+            this.buffer.copy(newBuffer);
+            this.buffer = newBuffer;
+            this.size = newSize;
+        }
+    }
+
+    readByte() {
+        let byte = this.buffer.readUInt8(this.position);
+        this.position += 1;
+        return byte;
+    }
+
+    readShort() {
+        let short = this.bigEndian
+            ? this.buffer.readUInt16BE(this.position)
+            : this.buffer.readUInt16LE(this.position);
+        this.position += 2;
+        return short;
+    }
+
+    readInt() {
+        let int = this.bigEndian
+            ? this.buffer.readUInt32BE(this.position)
+            : this.buffer.readUInt32LE(this.position);
+        this.position += 4;
+        return int;
+    }
+
+    writeByte(byte) {
+        this.resizeIfNeeded(1);
+        this.buffer.writeUInt8((byte >>> 0) & 0xff, this.position);
+        this.position += 1;
+    }
+
+    writeShort(short) {
+        this.resizeIfNeeded(2);
+        if (this.bigEndian) {
+            this.buffer.writeUInt16BE((short >>> 0) & 0xffff, this.position);
+        } else {
+            this.buffer.writeUInt16LE((short >>> 0) & 0xffff, this.position);
+        }
+        this.position += 2;
+    }
+
+    writeInt(int) {
+        this.resizeIfNeeded(4);
+        if (this.bigEndian) {
+            this.buffer.writeUInt32BE(int >>> 0, this.position);
+        } else {
+            this.buffer.writeUInt32LE(int >>> 0, this.position);
+        }
+        this.position += 4;
+    }
+
+    writeBuffer(buffer) {
+        this.resizeIfNeeded(buffer.length);
+        buffer.copy(this.buffer, this.position);
+        this.position += buffer.length;
+    }
+
+    getBuffer() {
+        let slice = this.buffer.slice(0, this.position);
+        return slice;
+    }
+
 }
-// #link /volume
-// #link /cli/argpar
-// #link /cli/FormatFactory
-// #link /utils/vec
-// #link /utils/xxHash32
-// #link /saf
 
-const fs = require('fs');
+function createLocalFileHeader(file) {
+    let fileNameBuffer = Buffer.from(file.name);
 
-const argpar = new ArgumentParser([
-    {
-        short: 'i',
-        long: 'input-file',
-        shortDescription: 'Path to the input file.',
-        parser: 'string',
-    },
-    {
-        short: 'o',
-        long: 'output-file',
-        shortDescription: 'Path to the output file.',
-        parser: 'string',
-    },
-    {
-        short: 'd',
-        long: 'dimensions',
-        shortDescription: 'Input file dimensions.',
-        parser: 'dimensions',
-    },
-    {
-        short: 'bd',
-        long: 'block-dimensions',
-        shortDescription: 'Block dimensions.',
-        parser: 'dimensions',
-    },
-    {
-        short: 'f',
-        long: 'input-format',
-        shortDescription: 'Input file format.',
-        parser: 'json',
-    },
-]);
+    let buffer = new SerialBuffer();
+    buffer.writeInt(0x04034b50);              // signature
+    buffer.writeShort(20);                    // version needed to extract
+    buffer.writeShort(0);                     // general purpose bit flag
+    buffer.writeShort(0);                     // compression method
+    buffer.writeShort(0);                     // last mod file time
+    buffer.writeShort(0);                     // last mod file date
+    buffer.writeInt(file.crc);                // crc32
+    buffer.writeInt(file.data.length);        // compressed size
+    buffer.writeInt(file.data.length);        // uncompressed size
+    buffer.writeShort(fileNameBuffer.length); // file name length
+    buffer.writeShort(0);                     // extra field length
+    buffer.writeBuffer(fileNameBuffer);       // file name
+    return buffer.getBuffer();
+}
 
-const params = argpar.parse(process.argv.slice(2));
-const format = FormatFactory.create(params['input-format']);
-const dimensions = params['dimensions'];
-const blockDimensions = params['block-dimensions'] ?? dimensions;
-const buffer = fs.readFileSync(params['input-file']);
-const data = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+function createCentralDirectoryFileHeader(file) {
+    let fileNameBuffer = Buffer.from(file.name);
 
-const parentBlock = new Block(dimensions, format, data);
+    let buffer = new SerialBuffer();
+    buffer.writeInt(0x02014b50);              // signature
+    buffer.writeShort(0);                     // version made by
+    buffer.writeShort(20);                    // version needed to extract
+    buffer.writeShort(0);                     // general purpose bit flag
+    buffer.writeShort(0);                     // compression method
+    buffer.writeShort(0);                     // last mod file time
+    buffer.writeShort(0);                     // last mod file date
+    buffer.writeInt(file.crc);                // crc32
+    buffer.writeInt(file.data.length);        // compressed size
+    buffer.writeInt(file.data.length);        // uncompressed size
+    buffer.writeShort(fileNameBuffer.length); // file name length
+    buffer.writeShort(0);                     // extra field length
+    buffer.writeShort(0);                     // file comment length
+    buffer.writeShort(0);                     // disk number start
+    buffer.writeShort(0);                     // internal file attributes
+    buffer.writeInt(0);                       // external file attributes
+    buffer.writeInt(file.offset);             // relative offset of local header
+    buffer.writeBuffer(fileNameBuffer);       // file name
+    return buffer.getBuffer();
+}
 
-const manifest = {
-    asset: {
-        version: '1.0',
-    },
-    formats: [
-        {
-            family: format.family,
-            microblockSize: format.microblockSize,
-            microblockDimensions: format.microblockDimensions,
-        },
-    ],
-    modalities: [
-        {
-            block: 0,
-        },
-    ],
-    blocks: [
-        {
-            dimensions: dimensions,
-            placements: [],
-        },
-    ],
-};
+function createEndOfCentralDirectoryRecord(numOfFiles, sizeOfCD, offsetOfCD) {
+    let buffer = new SerialBuffer();
+    buffer.writeInt(0x06054b50);              // signature
+    buffer.writeShort(0);                     // number of this disk
+    buffer.writeShort(0);                     // number of disk with start of CD
+    buffer.writeShort(numOfFiles);            // number of CD entries on this disk
+    buffer.writeShort(numOfFiles);            // total number of CD entries
+    buffer.writeInt(sizeOfCD);                // size of CD without EOCD
+    buffer.writeInt(offsetOfCD);              // offset of CD w.r.t. first disk
+    buffer.writeShort(0);                     // zip file comment length
+    return buffer.getBuffer();
+}
 
-const manifestFile = {
-    path: 'manifest.json',
-    mime: 'application/json',
-};
+function linearize(files, prefix = '') {
+    let processed = [];
+    files.forEach((file) => {
+        let rawName = file.name;
+        file.name = prefix + file.name;
+        processed.push(file);
+        if (file.type === 'directory') {
+            file.data = Buffer.alloc(0);
+            file.name += '/';
+            processed = processed.concat(linearize(file.files, file.name));
+        }
+    });
+    return processed;
+}
 
-const files = [
-    manifestFile,
-];
+function createZip(files, stream) {
+    files = linearize(files);
 
-const blockHashMap = new Map();
-
-const blockCount = vec.ceil(vec.div(dimensions, blockDimensions));
-for (const blockIndex of vec.lexi(blockCount)) {
-    const blockStart = vec.mul(blockIndex, blockDimensions);
-    const blockEnd = vec.min(vec.add(blockStart, blockDimensions), dimensions);
-
-    const block = parentBlock.get(blockStart, blockEnd);
-    const blockHash = xxHash32(new Uint8Array(block.data));
-
-    const blockAlreadyExists = blockHashMap.has(blockHash);
-
-    const blockID = blockAlreadyExists ? blockHashMap.get(blockHash) : manifest.blocks.length;
-    const blockURL = `blocks/block${blockID}`;
-
-    manifest.blocks[0].placements.push({
-        position: blockStart,
-        block: blockID,
+    let offset = 0;
+    files.forEach((file) => {
+        console.error('Compressing ' + file.name);
+        file.crc = crc32(file.data);
+        file.offset = offset;
+        let localFileHeader = createLocalFileHeader(file);
+        stream.write(localFileHeader);
+        stream.write(file.data);
+        offset += localFileHeader.length + file.data.length;
     });
 
-    if (!blockAlreadyExists) {
-        blockHashMap.set(blockHash, blockID);
+    let cdStart = offset;
 
-        manifest.blocks.push({
-            dimensions: block.dimensions,
-            format: 0,
-            data: blockURL,
-        });
+    files.forEach((file) => {
+        console.error('Writing CD header for ' + file.name);
+        let cdFileHeader = createCentralDirectoryFileHeader(file);
+        stream.write(cdFileHeader);
+        offset += cdFileHeader.length;
+    });
 
-        files.push({
-            path: blockURL,
-            data: new Uint8Array(block.data),
-        });
+    let cdEnd = offset;
+    let cdSize = cdEnd - cdStart;
+
+    console.error('Writing EOCD');
+    stream.write(createEndOfCentralDirectoryRecord(files.length, cdSize, cdStart));
+}
+
+// -----------------------------------------------------------------------------
+// --------------------------------- GRADIENT ----------------------------------
+// -----------------------------------------------------------------------------
+
+function computeGradientSobel(volumeData, volumeDimensions, idx) {
+    let kernelX = [
+         1,  0, -1,
+         2,  0, -2,
+         1,  0, -1,
+
+         2,  0, -2,
+         4,  0, -4,
+         2,  0, -2,
+
+         1,  0, -1,
+         2,  0, -2,
+         1,  0, -1
+    ];
+    let kernelY = [
+         1,  2,  1,
+         0,  0,  0,
+        -1, -2, -1,
+
+         2,  4,  2,
+         0,  0,  0,
+        -2, -4, -2,
+
+         1,  2,  1,
+         0,  0,  0,
+        -1, -2, -1
+    ];
+    let kernelZ = [
+         1,  2,  1,
+         2,  4,  2,
+         1,  2,  1,
+
+         0,  0,  0,
+         0,  0,  0,
+         0,  0,  0,
+
+        -1, -2, -1,
+        -2, -4, -2,
+        -1, -2, -2
+    ];
+    let values = [
+        0, 0, 0,
+        0, 0, 0,
+        0, 0, 0,
+
+        0, 0, 0,
+        0, 0, 0,
+        0, 0, 0,
+
+        0, 0, 0,
+        0, 0, 0,
+        0, 0, 0
+    ];
+    for (let k = 0; k < 3; k++) {
+        for (let j = 0; j < 3; j++) {
+            for (let i = 0; i < 3; i++) {
+                let kernelIdx = index({
+                    x : i,
+                    y : j,
+                    z : k
+                }, {
+                    width  : 3,
+                    height : 3,
+                    depth  : 3
+                });
+                let volumeIndex = index({
+                    x : idx.x + i - 1,
+                    y : idx.y + j - 1,
+                    z : idx.z + k - 1
+                }, volumeDimensions);
+                values[kernelIdx] = volumeData[volumeIndex] / 255;
+            }
+        }
     }
 
+    let dx = 0;
+    for (let i = 0; i < kernelX.length; i++) {
+        dx += kernelX[i] * values[i];
+    }
+    dx /= kernelX.length;
+
+    let dy = 0;
+    for (let i = 0; i < kernelY.length; i++) {
+        dy += kernelY[i] * values[i];
+    }
+    dy /= kernelY.length;
+
+    let dz = 0;
+    for (let i = 0; i < kernelZ.length; i++) {
+        dz += kernelZ[i] * values[i];
+    }
+    dz /= kernelZ.length;
+
+    return { dx, dy, dz };
 }
 
-manifestFile.data = new TextEncoder().encode(JSON.stringify(manifest));
+function computeGradientForward(volumeData, volumeDimensions, idx) {
+    let valueCenter = volumeData[index(idx, volumeDimensions)] / 255;
+    let valueX = volumeData[index({
+        x : idx.x + 1,
+        y : idx.y,
+        z : idx.z
+    }, volumeDimensions)] / 255;
+    let valueY = volumeData[index({
+        x : idx.x,
+        y : idx.y + 1,
+        z : idx.z
+    }, volumeDimensions)] / 255;
+    let valueZ = volumeData[index({
+        x : idx.x,
+        y : idx.y,
+        z : idx.z + 1
+    }, volumeDimensions)] / 255;
 
-const saf = safEncode(files);
+    let dx = valueX - valueCenter;
+    let dy = valueY - valueCenter;
+    let dz = valueZ - valueCenter;
 
-if (fs.existsSync(params['output-file'])) {
-    throw new Error(`Output file ${params['output-file']} exists, refusing to write`);
+    return { dx, dy, dz };
 }
 
-fs.writeFileSync(params['output-file'], saf);
+function computeGradient(volumeData, dimensions) {
+    console.error('Computing gradient');
 
+    const gradientData = Buffer.allocUnsafe(totalCount(dimensions) * 3);
+
+    for (let k = 0; k < dimensions.depth; k++) {
+        for (let j = 0; j < dimensions.height; j++) {
+            for (let i = 0; i < dimensions.width; i++) {
+                let centerIdx = index({
+                    x: i,
+                    y: j,
+                    z: k
+                }, dimensions);
+                if (i === 0 || j === 0 || k === 0 ||
+                    i === dimensions.width  - 1 ||
+                    j === dimensions.height - 1 ||
+                    k === dimensions.depth  - 1) {
+                    gradientData[centerIdx] = 0;
+                } else {
+                    let gradient = computeGradientSobel(volumeData, dimensions, {
+                        x: i,
+                        y: j,
+                        z: k
+                    });
+
+                    // here, dividing by Math.sqrt(3) would prevent clamping in the worst case
+                    gradient.dx = Math.min(Math.max(Math.round(gradient.dx * 255), 0), 255);
+                    gradient.dy = Math.min(Math.max(Math.round(gradient.dy * 255), 0), 255);
+                    gradient.dz = Math.min(Math.max(Math.round(gradient.dz * 255), 0), 255);
+                    gradientData[centerIdx * 3 + 0] = gradient.dx;
+                    gradientData[centerIdx * 3 + 1] = gradient.dy;
+                    gradientData[centerIdx * 3 + 2] = gradient.dz;
+                }
+            }
+        }
+    }
+
+    console.error(gradientData[1408830]);
+    return gradientData;
+}
+
+function computeGradientMagnitude(volumeData, dimensions) {
+    console.error('Computing gradient magnitude');
+    // let gms = new Set();
+
+    const gradientData = Buffer.allocUnsafe(totalCount(dimensions));
+
+    for (let k = 0; k < dimensions.depth; k++) {
+        for (let j = 0; j < dimensions.height; j++) {
+            for (let i = 0; i < dimensions.width; i++) {
+                let centerIdx = index({
+                    x: i,
+                    y: j,
+                    z: k
+                }, dimensions);
+                if (i === 0 || j === 0 || k === 0 ||
+                    i === dimensions.width  - 1 ||
+                    j === dimensions.height - 1 ||
+                    k === dimensions.depth  - 1) {
+                    gradientData[centerIdx] = 0;
+                } else {
+                    const { dx, dy, dz } = computeGradientSobel(volumeData, dimensions, {
+                        x: i,
+                        y: j,
+                        z: k
+                    });
+                    // here, dividing by Math.sqrt(3) would prevent clamping in the worst case
+                    const gradient = Math.sqrt(dx * dx + dy * dy + dz * dz);
+                    const normalized = Math.min(Math.max(Math.round(gradient * 255), 0), 255);
+                    gradientData[centerIdx] = normalized;
+                    // gms.add(normalized);
+                }
+            }
+        }
+    }
+    // console.log(gms.size);
+    // console.log(gms);
+    // fs.appendFileSync("gms.raw", Uint8Array.from(gradientData));
+    return gradientData;
+}
+
+function computeOutputData(volumeData, modality) {
+    if (!modality.gradient && !modality.gradientMagnitude) {
+        return volumeData;
+    }
+
+    if (modality.gradient && !modality.gradientMagnitude) {
+        if (modality.format !== formats.R8) {
+            throw new Error('Gradient requires format R8');
+        }
+
+        modality.format = formats.RGBA8;
+        const gradientData = computeGradient(volumeData, modality.dimensions);
+        return combineData([
+            { data: volumeData,   bytes: 1 },
+            { data: gradientData, bytes: 3 },
+        ]);
+    }
+
+    if (!modality.gradient && modality.gradientMagnitude) {
+        if (modality.format !== formats.R8) {
+            throw new Error('Gradient magnitude requires format R8');
+        }
+
+        modality.format = formats.RG8;
+        const gradientData = computeGradientMagnitude(volumeData, modality.dimensions);
+        return combineData([
+            { data: volumeData,   bytes: 1 },
+            { data: gradientData, bytes: 1 },
+        ]);
+    }
+
+    throw new Error('Cannot use both gradient and gradient magnitude');
+}
+
+// -----------------------------------------------------------------------------
+// ---------------------------------- FORMAT -----------------------------------
+// -----------------------------------------------------------------------------
+
+const gl = {
+    BYTE                           : 0x1400,
+    UNSIGNED_BYTE                  : 0x1401,
+    SHORT                          : 0x1402,
+    UNSIGNED_SHORT                 : 0x1403,
+    INT                            : 0x1404,
+    UNSIGNED_INT                   : 0x1405,
+    FLOAT                          : 0x1406,
+    HALF_FLOAT                     : 0x140B,
+
+    RED                            : 0x1903,
+    RG                             : 0x8227,
+    RGB                            : 0x1907,
+    RGBA                           : 0x1908,
+    RED_INTEGER                    : 0x8D94,
+    RG_INTEGER                     : 0x8228,
+    RGB_INTEGER                    : 0x8D98,
+    RGBA_INTEGER                   : 0x8D99,
+
+    RGB8                           : 0x8051,
+    RGBA8                          : 0x8058,
+    SRGB                           : 0x8C40,
+    SRGB8                          : 0x8C41,
+    RGBA32F                        : 0x8814,
+    RGB32F                         : 0x8815,
+    RGBA16F                        : 0x881A,
+    RGB16F                         : 0x881B,
+    RGB9_E5                        : 0x8C3D,
+    RGBA32UI                       : 0x8D70,
+    RGB32UI                        : 0x8D71,
+    RGBA16UI                       : 0x8D76,
+    RGB16UI                        : 0x8D77,
+    RGBA8UI                        : 0x8D7C,
+    RGB8UI                         : 0x8D7D,
+    RGBA32I                        : 0x8D82,
+    RGB32I                         : 0x8D83,
+    RGBA16I                        : 0x8D88,
+    RGB16I                         : 0x8D89,
+    RGBA8I                         : 0x8D8E,
+    RGB8I                          : 0x8D8F,
+    R8                             : 0x8229,
+    RG8                            : 0x822B,
+    R16F                           : 0x822D,
+    R32F                           : 0x822E,
+    RG16F                          : 0x822F,
+    RG32F                          : 0x8230,
+    R8I                            : 0x8231,
+    R8UI                           : 0x8232,
+    R16I                           : 0x8233,
+    R16UI                          : 0x8234,
+    R32I                           : 0x8235,
+    R32UI                          : 0x8236,
+    RG8I                           : 0x8237,
+    RG8UI                          : 0x8238,
+    RG16I                          : 0x8239,
+    RG16UI                         : 0x823A,
+    RG32I                          : 0x823B,
+    RG32UI                         : 0x823C,
+    R8_SNORM                       : 0x8F94,
+    RG8_SNORM                      : 0x8F95,
+    RGB8_SNORM                     : 0x8F96,
+    RGBA8_SNORM                    : 0x8F97,
+};
+
+const formats = {
+    R8: {
+        format: gl.RED,
+        internalFormat: gl.R8,
+        type: gl.UNSIGNED_BYTE,
+        bytesPerVoxel: 1,
+        bytesPerComponent: 1,
+    },
+    RG8: {
+        format: gl.RG,
+        internalFormat: gl.RG8,
+        type: gl.UNSIGNED_BYTE,
+        bytesPerVoxel: 2,
+        bytesPerComponent: 1,
+    },
+    RGBA8: {
+        format: gl.RGBA,
+        internalFormat: gl.RGBA8,
+        type: gl.UNSIGNED_BYTE,
+        bytesPerVoxel: 4,
+        bytesPerComponent: 1,
+    },
+    R32UI: {
+        format: gl.RED_INTEGER,
+        internalFormat: gl.R32UI,
+        type: gl.UNSIGNED_INT,
+        bytesPerVoxel: 4,
+        bytesPerComponent: 4,
+    }
+};
+
+// -----------------------------------------------------------------------------
+// ----------------------------------- MAIN ------------------------------------
+// -----------------------------------------------------------------------------
+
+let manifest = {
+    meta: {
+        name    : 'Volume',
+        comment : 'Volume generated with raw2bvp',
+        version : 1
+    },
+    modalities: [],
+    blocks: []
+};
+
+const modalityTemplate = {
+    name: 'default',
+    file: '',
+    dimensions: {
+        width  : 0,
+        height : 0,
+        depth  : 0
+    },
+    blockSize: 128,
+    format: formats.R8,
+    gradient: false,
+    gradientMagnitude: false,
+    transform: {
+        matrix: [
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1
+        ]
+    },
+    placements: []
+};
+
+let manifestOutputFile = {
+    type: 'file',
+    name: 'manifest.json',
+    data: null // update with manifest when finished
+};
+
+let blockOutputDirectory = {
+    type: 'directory',
+    name: 'blocks',
+    files: []
+};
+
+let additionalFilesDirectory = {
+    type: 'directory',
+    name: 'files',
+    files: []
+};
+
+let currentModality = null;
+let outputFile = null;
+
+for (let i = 2; i < process.argv.length - 1; i++) {
+    let arg = process.argv[i];
+    let val = process.argv[i + 1];
+    switch (arg) {
+        case '-m':
+        case '--modality':
+            currentModality = manifest.modalities.find(m => m.name === val);
+            if (!currentModality) {
+                currentModality = clone(modalityTemplate);
+                currentModality.name = val;
+                manifest.modalities.push(currentModality);
+            }
+            break;
+
+        case '-i':
+        case '--input-file':
+            currentModality.file = val;
+            break;
+
+        case '-d':
+        case '--dimensions':
+            let split = val.split('x');
+            currentModality.dimensions = {
+                width  : parseInt(split[0]),
+                height : parseInt(split[1]),
+                depth  : parseInt(split[2]),
+            };
+            break;
+
+        case '-b':
+        case '--block-size':
+            currentModality.blockSize = parseInt(val);
+            break;
+
+        case '-f':
+        case '--format':
+            currentModality.format = formats[val];
+
+        case '-g':
+        case '--gradient':
+            currentModality.gradient = (val === 'true');
+            break;
+
+        case '-G':
+        case '--gradient-magnitude':
+            currentModality.gradientMagnitude = (val === 'true');
+            break;
+
+        case '--volume-name':
+            manifest.meta.name = val;
+            break;
+
+        case '--volume-comment':
+            manifest.meta.comment = val;
+            break;
+
+        case '-o':
+        case '--output-file':
+            outputFile = val;
+            break;
+
+        case '-a':
+        case '--additional-file':
+            additionalFilesDirectory.files.push({
+                type: 'file',
+                name: path.basename(val),
+                data: fs.readFileSync(val)
+            });
+            break;
+    }
+}
+
+let processedBlocks = 0;
+
+for (const modality of manifest.modalities) {
+    console.error(`Processing modality ${modality.name}`);
+    const inputData = fs.readFileSync(modality.file);
+    const volumeData = computeOutputData(inputData, modality);
+
+    const { format, blockSize, dimensions } = modality;
+    modality.format = format.format;
+    modality.internalFormat = format.internalFormat;
+    modality.type = format.type;
+
+    const numberOfBlocks = {
+        width  : Math.ceil(dimensions.width  / blockSize),
+        height : Math.ceil(dimensions.height / blockSize),
+        depth  : Math.ceil(dimensions.depth  / blockSize),
+    };
+
+    const totalBlocks = totalCount(numberOfBlocks);
+
+    const blockDirectory = {
+        type: 'directory',
+        name: modality.name,
+        files: []
+    };
+
+    for (let k = 0; k < numberOfBlocks.depth; k++) {
+        for (let j = 0; j < numberOfBlocks.height; j++) {
+            for (let i = 0; i < numberOfBlocks.width; i++) {
+                const idx = {
+                    x: i,
+                    y: j,
+                    z: k,
+                };
+
+                const internalIndex = index(idx, numberOfBlocks);
+                const overallIndex = processedBlocks + internalIndex;
+                const placement = {
+                    index: overallIndex,
+                    position: {
+                        x: idx.x * blockSize,
+                        y: idx.y * blockSize,
+                        z: idx.z * blockSize,
+                    }
+                };
+
+                const blockName = `block-${internalIndex}.raw`;
+                const block = {
+                    url: `blocks/${modality.name}/${blockName}`,
+                    format: 'raw',
+                    dimensions: {
+                        width  : Math.min(dimensions.width  - placement.position.x, blockSize),
+                        height : Math.min(dimensions.height - placement.position.y, blockSize),
+                        depth  : Math.min(dimensions.depth  - placement.position.z, blockSize),
+                    }
+                };
+
+                console.error(`Extracting block ${placement.index} of ${totalBlocks}`);
+                const blockData = extractBlock(
+                    volumeData, dimensions, placement.position,
+                    block.dimensions, format.bytesPerVoxel);
+
+                manifest.blocks.push(block);
+                modality.placements.push(placement);
+
+                blockDirectory.files.push({
+                    type: 'file',
+                    name: blockName,
+                    data: blockData,
+                });
+            }
+        }
+    }
+
+    // clean up manifest
+    delete modality.file;
+    delete modality.blockSize;
+    delete modality.gradient;
+    delete modality.gradientMagnitude;
+
+    blockOutputDirectory.files.push(blockDirectory);
+    processedBlocks += totalBlocks;
+}
+
+manifestOutputFile.data = Buffer.from(JSON.stringify(manifest));
+const stream = outputFile ? fs.createWriteStream(outputFile) : process.stdout;
+const files = [
+    manifestOutputFile,
+    blockOutputDirectory,
+].concat(additionalFilesDirectory.files);
+createZip(files, stream);
+console.error('Done!');
