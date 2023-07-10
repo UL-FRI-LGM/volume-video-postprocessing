@@ -1,3 +1,4 @@
+#include <openvdb/math/Coord.h>
 #include <openvdb/openvdb.h>
 #include <iostream>
 #include <string>
@@ -7,6 +8,8 @@
 #include <boost/algorithm/string.hpp>
 #include <vector>
 #include <algorithm>
+#include <thread>
+#include <fstream>
 
 namespace fs = std::filesystem;
 using std::string, std::vector;
@@ -36,28 +39,54 @@ openvdb::FloatGrid::Ptr combineGrids(vector<openvdb::FloatGrid::Ptr> grids)
         });
 }
 
+vector<float> getModelColors(string path) 
+{
+    using boost::split, boost::is_any_of;
+    vector<string> strs;
+    split(strs, path, is_any_of("-"));
+    path = strs[1].substr(0, strs[1].size()-4);
+    split(strs, path, is_any_of(","));
+    vector<float> color(strs.size());
+    std::transform(strs.begin(), strs.end(), color.begin(), [](string i) {return std::stof(i);});
+    return color;
+}
+
+void vdb2Raw(openvdb::FloatGrid::Ptr grid, string output)
+{
+    openvdb::FloatGrid::ConstAccessor accessor = grid->getConstAccessor();
+    auto bound_box = grid->evalActiveVoxelBoundingBox();
+    std::ofstream outputFile(output + std::to_string(bound_box.dim().x()) + "," +
+                             std::to_string(bound_box.dim().y()) + "," +
+                             std::to_string(bound_box.dim().z()) + ".bin", std::ios::binary);
+    if (!outputFile)
+    {
+        std::cout << "Can't write to file" << std::endl;
+        return;
+    }
+
+    for (auto i = grid->evalActiveVoxelBoundingBox().beginXYZ(); i; ++i)
+    {
+        uint8_t value = static_cast<char>(accessor.getValue(*i) * 255);
+        outputFile << value;
+    }
+}
+
 int main()
 {
     // Initialize the OpenVDB library
     openvdb::initialize();
-    string path = "./model_vdbc";
+    string model_dir = "./model_vdbc";
+    string output_dir = "./model_combined_raw";
 
     vector<openvdb::FloatGrid::Ptr> red_grids;
     vector<openvdb::FloatGrid::Ptr> blue_grids;
     vector<openvdb::FloatGrid::Ptr> green_grids;
-    for (const auto & entry : fs::directory_iterator(path))
+    for (const auto & entry : fs::directory_iterator(model_dir))
     {
-        // Parse the filename
-        using boost::split, boost::is_any_of;
-        string path = entry.path();
-        vector<string> strs;
-        split(strs, path, is_any_of("-"));
-        path = strs[1].substr(0, strs[1].size()-4);
-        split(strs, path, is_any_of(","));
-        vector<float> color(strs.size());
-        std::transform(strs.begin(), strs.end(), color.begin(), [](string i) {return std::stof(i);});
+        // Parse filename to get color
+        vector<float> color = getModelColors(entry.path());
 
-        // Read files
+        // Read file and make r, g, and b grids
         openvdb::io::File file(entry.path());
         file.open();
         openvdb::GridBase::Ptr grid = file.readGrid("density");
@@ -73,6 +102,10 @@ int main()
     openvdb::FloatGrid::Ptr green = combineGrids(green_grids);
     openvdb::FloatGrid::Ptr blue = combineGrids(blue_grids);
     
-    // Save to file
-    openvdb::io::File("result.vdb").write({accumulator});
+    // // Save to file
+    // openvdb::io::File("result.vdb").write({accumulator});
+    
+    vdb2Raw(red, output_dir + "/red");    
+    vdb2Raw(green, output_dir + "/green");    
+    vdb2Raw(blue, output_dir + "/blue");    
 }

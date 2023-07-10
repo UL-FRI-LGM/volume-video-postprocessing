@@ -26,23 +26,46 @@
       # Development environment output
       devShells = forAllSystems ({ pkgs }: {
         default =
-          let
-            python = pkgs.python310;
-          in
+          # let
+          #   python = pkgs.python310;
+          # in
           pkgs.mkShell {
             # The Nix packages provided in the environment
-            packages = [
-              # Python plus helper tools
-              pkgs.blender
-              pkgs.fish
-              (python.withPackages (ps: with ps; [
-                virtualenv
-                pip
-                python-lsp-server
-              ]))
+            packages = with pkgs; [
+              lldb
+              clang-tools
+              openvdb
+              boost
+              tbb
+              blender
+              # pkgs.fish
+              pkgs.nodejs
+              # pkgs.nodePackages.vscode-langservers-extracted
+              # pkgs.nodePackages.typescript-language-server
+              # (python.withPackages (ps: with ps; [
+              #   virtualenv
+              #   pip
+              #   python-lsp-server
+              # ]))
             ];
             shellHook = ''
-              exec fish -C 'source .venv/bin/activate.fish'
+            '';
+          };
+      });
+      packages = forAllSystems ({ pkgs }: {
+        default =
+          let
+            binName = "combiner";
+            cppDependencies = with pkgs; [ gcc openvdb tbb boost ];
+          in
+          pkgs.stdenv.mkDerivation {
+            name = "combiner";
+            src = self;
+            buildInputs = cppDependencies;
+            buildPhase = "c++ -std=c++17 -o ${binName} ${./main.cpp} -lboost_system -lopenvdb -ltbb";
+            installPhase = ''
+              mkdir -p $out/bin
+              cp ${binName} $out/bin/
             '';
           };
       });
