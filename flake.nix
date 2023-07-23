@@ -38,10 +38,10 @@
               boost
               tbb
               blender
-              # pkgs.fish
+              pkgs.fish
               pkgs.nodejs
-              # pkgs.nodePackages.vscode-langservers-extracted
-              # pkgs.nodePackages.typescript-language-server
+              pkgs.nodePackages.vscode-langservers-extracted
+              pkgs.nodePackages.typescript-language-server
               # (python.withPackages (ps: with ps; [
               #   virtualenv
               #   pip
@@ -49,6 +49,7 @@
               # ]))
             ];
             shellHook = ''
+              fish
             '';
           };
       });

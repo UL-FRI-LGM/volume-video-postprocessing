@@ -1,8 +1,11 @@
 import bpy
 import numpy as np
+import os
 
-PATH = '/home/enei/Documents/diplomska/vdb'
-
+PATH = '/home/enei/Documents/diplomska/vdb/'
+FRAME_COUNT = 60
+if not os.path.exists(PATH):
+    os.makedirs(PATH)
 
 def mesh_to_volume(object, intensity, name):
     volume_data = bpy.data.volumes.new("output_volume")
@@ -20,16 +23,21 @@ def mesh_to_volume(object, intensity, name):
     out = volume.evaluated_get(bpy.context.evaluated_depsgraph_get())
     print(out.data.grids.keys())
     
-    out.data.grids.save(PATH + name)
+    out.data.grids.save(name)
     
     bpy.data.objects.remove(volume, do_unlink=True)
 
 
-objects = bpy.context.objects
-for object in objects:
-    color = np.array(object.data.materials[0]
-                .node_tree.nodes["Principled BSDF"]
-                .inputs["Base Color"].default_value)
-    [r,g,b,_] = color         
-    mesh_to_volume(object, r, f'{object.name}-{r},{g},{b}.vdb')
-
+objects = bpy.context.scene.objects
+objects = [obj for obj in objects if obj.type == 'MESH']
+for i in range(FRAME_COUNT):
+    bpy.context.scene.frame_set(i)
+    frame_dir = PATH + f'{i}'
+    if not os.path.exists(frame_dir):
+        os.makedirs(frame_dir)
+    for object in objects:
+        color = np.array(object.data.materials[0]
+                    .node_tree.nodes["Principled BSDF"]
+                    .inputs["Base Color"].default_value)
+        [r,g,b,_] = color         
+        mesh_to_volume(object, r, frame_dir + f'/{object.name}-{r},{g},{b}.vdb')
