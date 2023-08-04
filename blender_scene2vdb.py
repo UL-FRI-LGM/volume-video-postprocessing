@@ -40,4 +40,4 @@ for i in range(FRAME_COUNT):
                     .node_tree.nodes["Principled BSDF"]
                     .inputs["Base Color"].default_value)
         [r,g,b,_] = color         
-        mesh_to_volume(object, r, frame_dir + f'/{object.name}-{r},{g},{b}.vdb')
+        mesh_to_volume(object, 1.0, frame_dir + f'/{object.name}-{r},{g},{b}.vdb')
