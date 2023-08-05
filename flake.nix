@@ -1,31 +1,27 @@
 {
-  description = "Environment for developing volumes with blender";
+  description = "Flake for making and developing volumetric videos";
 
   # Flake inputs
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs"; # also valid: "nixpkgs"
+    utils.url = "github:numtide/flake-utils";
   };
 
   # Flake outputs
-  outputs = { self, nixpkgs }:
-    let
-      # Systems supported
-      allSystems = [
-        "x86_64-linux" # 64-bit Intel/AMD Linux
-        # "aarch64-linux" # 64-bit ARM Linux
-        # "x86_64-darwin" # 64-bit Intel macOS
-        # "aarch64-darwin" # 64-bit ARM macOS
-      ];
-
-      # Helper to provide system-specific attributes
-      forAllSystems = f: nixpkgs.lib.genAttrs allSystems (system: f {
-        pkgs = import nixpkgs { inherit system; };
-      });
-    in
-    {
-      # Development environment output
-      devShells = forAllSystems ({ pkgs }: {
-        default =
+  outputs = { self, nixpkgs, utils }:
+    utils.lib.eachSystem [
+      "x86_64-linux" # 64-bit Intel/AMD Linux
+      "aarch64-linux" # 64-bit ARM Linux
+      # "x86_64-darwin" # 64-bit Intel macOS
+      # "aarch64-darwin" # 64-bit ARM macOS
+    ] (system:
+      let
+        # Helper to provide system-specific attributes
+        pkgs = nixpkgs.legacyPackages.${system};
+      in
+      {
+        # Development environment output
+        devShells.default =
           # let
           #   python = pkgs.python310;
           # in
@@ -38,10 +34,11 @@
               boost
               tbb
               blender
-              pkgs.fish
-              pkgs.nodejs
-              pkgs.nodePackages.vscode-langservers-extracted
-              pkgs.nodePackages.typescript-language-server
+              fish
+              nodejs
+              nodePackages.vscode-langservers-extracted
+              nodePackages.typescript-language-server
+              inotify-tools
               # (python.withPackages (ps: with ps; [
               #   virtualenv
               #   pip
@@ -49,12 +46,11 @@
               # ]))
             ];
             shellHook = ''
-              fish
+              exec fish
             '';
           };
-      });
-      packages = forAllSystems ({ pkgs }: {
-        default =
+      
+        packages.vdb2raw =
           let
             binName = "combiner";
             cppDependencies = with pkgs; [ gcc openvdb tbb boost ];
@@ -68,7 +64,28 @@
               mkdir -p $out/bin
               cp ${binName} $out/bin/
             '';
-          };
-      });
-    };
+        };
+        
+
+        packages.default = pkgs.stdenv.mkDerivation {
+          name = "make-video";
+          src = ./.;
+          nativeBuildInputs = [
+            pkgs.makeBinaryWrapper
+          ];
+          buildInputs = with pkgs; [
+            blender
+            nodejs
+            self.packages.${system}.vdb2raw
+          ];
+          installPhase = ''
+            mkdir -p $out/bin
+            cp blender_scene2vdb.py $out/bin
+            cp raw2bvp.js $out/bin
+            cp make-video $out/bin
+            wrapProgram $out/bin/make-video \
+              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.blender pkgs.nodejs self.packages.${system}.vdb2raw ]}
+          '';
+        };
+    });
 }
