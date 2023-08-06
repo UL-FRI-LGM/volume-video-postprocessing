@@ -39,6 +39,7 @@
               nodePackages.vscode-langservers-extracted
               nodePackages.typescript-language-server
               inotify-tools
+              fiji
               # (python.withPackages (ps: with ps; [
               #   virtualenv
               #   pip
