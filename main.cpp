@@ -119,6 +119,20 @@ int main()
         openvdb::FloatGrid::Ptr red = combineGrids(red_grids);
         openvdb::FloatGrid::Ptr green = combineGrids(green_grids);
         openvdb::FloatGrid::Ptr blue = combineGrids(blue_grids);
+
+        openvdb::FloatGrid::Accessor red_acc = red->getAccessor();
+        openvdb::FloatGrid::Accessor green_acc = green->getAccessor();
+        openvdb::FloatGrid::Accessor blue_acc = blue->getAccessor();
+        for (auto i = red->evalActiveVoxelBoundingBox().beginXYZ(); i; ++i) {
+            auto r = red_acc.getValue(*i);
+            auto g = green_acc.getValue(*i);
+            auto b = blue_acc.getValue(*i);
+            if (r + g + b < 0.1) {
+                red_acc.setValue(*i, 0.2);
+                green_acc.setValue(*i, 0.0);
+                blue_acc.setValue(*i, 0.3);
+            }
+        }
         
         string frame_dir = output_dir + entry.path().filename().string();
         fs::create_directory(frame_dir);
