@@ -60,7 +60,7 @@
             name = "combiner";
             src = self;
             buildInputs = cppDependencies;
-            buildPhase = "c++ -std=c++17 -o ${binName} ${./main.cpp} -lboost_system -lopenvdb -ltbb";
+            buildPhase = "c++ -std=c++17 -O3 -o ${binName} ${./main.cpp} -lboost_system -lopenvdb -ltbb";
             installPhase = ''
               mkdir -p $out/bin
               cp ${binName} $out/bin/
