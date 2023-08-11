@@ -1,3 +1,4 @@
 .voxelizer
 model_vdb/*
 model_raw/*
+results
