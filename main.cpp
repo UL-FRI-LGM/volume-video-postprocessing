@@ -1,3 +1,4 @@
+#include <math.h>
 #include <openvdb/math/Coord.h>
 #include <openvdb/openvdb.h>
 #include <openvdb/tools/Composite.h>
@@ -76,6 +77,54 @@ void vdb2Raw(openvdb::FloatGrid::Ptr grid, string output)
     }
 }
 
+openvdb::FloatGrid::Ptr convolveX(openvdb::FloatGrid::Ptr grid, vector<float> kernel) {
+    auto const_grid = grid->getConstAccessor();
+    auto output = grid->deepCopy();
+    auto output_grid = output->getAccessor();
+    int size = kernel.size();
+    int pol = -floor(size*0.5);
+    for (auto a = grid->evalActiveVoxelBoundingBox().beginXYZ(); a; ++a) {
+        float acc = 0;
+        for (int i = 0; i < size; i++) {
+            acc += kernel[i] * const_grid.getValue(*a + openvdb::v10_0::math::Coord(i + pol, 0, 0));
+        }
+        output_grid.setValue(*a, acc);
+    }
+    return output;
+}
+
+openvdb::FloatGrid::Ptr convolveY(openvdb::FloatGrid::Ptr grid, vector<float> kernel) {
+    auto const_grid = grid->getConstAccessor();
+    auto output = grid->deepCopy();
+    auto output_grid = output->getAccessor();
+    int size = kernel.size();
+    int pol = -floor(size*0.5);
+    for (auto a = grid->evalActiveVoxelBoundingBox().beginXYZ(); a; ++a) {
+        float acc = 0;
+        for (int i = 0; i < size; i++) {
+            acc += kernel[i] * const_grid.getValue(*a + openvdb::v10_0::math::Coord(0, i + pol, 0));
+        }
+        output_grid.setValue(*a, acc);
+    }
+    return output;
+}
+
+openvdb::FloatGrid::Ptr convolveZ(openvdb::FloatGrid::Ptr grid, vector<float> kernel) {
+    auto const_grid = grid->getConstAccessor();
+    auto output = grid->deepCopy();
+    auto output_grid = output->getAccessor();
+    int size = kernel.size();
+    int pol = -floor(size*0.5);
+    for (auto a = grid->evalActiveVoxelBoundingBox().beginXYZ(); a; ++a) {
+        float acc = 0;
+        for (int i = 0; i < size; i++) {
+            acc += kernel[i] * const_grid.getValue(*a + openvdb::v10_0::math::Coord(0, 0, i + pol));
+        }
+        output_grid.setValue(*a, acc);
+    }
+    return output;
+}
+
 int main()
 {
     // Initialize the OpenVDB library
@@ -120,53 +169,12 @@ int main()
         openvdb::FloatGrid::Ptr green = combineGrids(green_grids);
         openvdb::FloatGrid::Ptr blue = combineGrids(blue_grids);
 
-        float kernel[3][3][3] = {
-                      {{0.037037037, 0.037037037, 0.037037037},
-                       {0.037037037, 0.037037037, 0.037037037},
-                       {0.037037037, 0.037037037, 0.037037037}},
-                      {{0.037037037, 0.037037037, 0.037037037},
-                       {0.037037037, 0.037037037, 0.037037037},
-                       {0.037037037, 0.037037037, 0.037037037}},
-                      {{0.037037037, 0.037037037, 0.037037037},
-                       {0.037037037, 0.037037037, 0.037037037},
-                       {0.037037037, 0.037037037, 0.037037037}}
-                      };
 
-        auto red_acc = red->getConstAccessor();
-        auto green_acc = green->getConstAccessor();
-        auto blue_acc = blue->getConstAccessor();
-        auto red_out = red->deepCopy();
-        auto green_out = green->deepCopy();
-        auto blue_out = blue->deepCopy();
-        auto red_new = red_out->getAccessor();
-        auto green_new = green_out->getAccessor();
-        auto blue_new = blue_out->getAccessor();
-        for (auto a = red->evalActiveVoxelBoundingBox().beginXYZ(); a; ++a) {
-            auto r = red_acc.getValue(*a);
-            auto g = green_acc.getValue(*a);
-            auto b = blue_acc.getValue(*a);
-            float red_bin = 0.0;
-            float green_bin = 0.0;
-            float blue_bin = 0.0;
-            for(int i=-1; i<=1; i++){
-                for(int j=-1; j<=1; j++){
-                    for(int k=-1; k<=1; k++) {
-                        auto current = *a + openvdb::v10_0::math::Coord(i, j, k);
-                        red_bin += red_acc.getValue(current) * kernel[i+1][j+1][k+1];
-                        green_bin += green_acc.getValue(current) * kernel[i+1][j+1][k+1];
-                        blue_bin += blue_acc.getValue(current) * kernel[i+1][j+1][k+1];
-                    }
-                }
-            }
-            red_new.setValue(*a, red_bin);
-            green_new.setValue(*a, green_bin);
-            blue_new.setValue(*a, blue_bin);
-        }
-        
         string frame_dir = output_dir + entry.path().filename().string();
         fs::create_directory(frame_dir);
-        vdb2Raw(red_out, frame_dir + "/red");    
-        vdb2Raw(green_out, frame_dir + "/green");    
-        vdb2Raw(blue_out, frame_dir + "/blue");    
+        vector<float> kernel = {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
+        vdb2Raw(convolveX(red, kernel), frame_dir + "/red");    
+        vdb2Raw(convolveX(green, kernel), frame_dir + "/green");    
+        vdb2Raw(convolveX(blue, kernel), frame_dir + "/blue");    
     }
 }
