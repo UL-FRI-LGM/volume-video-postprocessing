@@ -40,6 +40,7 @@
               nodePackages.typescript-language-server
               inotify-tools
               fiji
+	      vscodium
               # (python.withPackages (ps: with ps; [
               #   virtualenv
               #   pip
@@ -47,7 +48,7 @@
               # ]))
             ];
             shellHook = ''
-              exec fish
+	    	exec fish
             '';
           };
       

@@ -45,6 +45,16 @@ openvdb::FloatGrid::Ptr combineGrids(vector<openvdb::FloatGrid::Ptr> grids)
         });
 }
 
+string getModelName(string path) 
+{
+    using boost::split, boost::is_any_of;
+    vector<string> strs;
+    split(strs, path, is_any_of("/"));
+    path = strs.back();
+    split(strs, path, is_any_of("-"));
+    return strs[0];
+}
+
 vector<float> getModelColors(string path) 
 {
     using boost::split, boost::is_any_of;
@@ -125,6 +135,22 @@ openvdb::FloatGrid::Ptr convolveZ(openvdb::FloatGrid::Ptr grid, vector<float> ke
     return output;
 }
 
+openvdb::FloatGrid::Ptr DoG(openvdb::FloatGrid::Ptr grid) {
+    vector<float> small_gauss = {0.15338835280702454, 0.22146110682534667, 0.2503010807352574, 0.22146110682534667, 0.15338835280702454};
+    vector<float> big_gauss = {0.009300040045324049, 0.028001560233780885, 0.06598396774984912, 0.12170274650962626, 0.17571363439579307, 0.19859610213125314, 0.17571363439579307, 0.12170274650962626, 0.06598396774984912, 0.028001560233780885, 0.009300040045324049};
+    auto small_blur = convolveZ(convolveY(convolveX(grid, small_gauss), small_gauss), small_gauss);
+    auto big_blur = convolveZ(convolveY(convolveX(grid, big_gauss), big_gauss), big_gauss);
+    
+    auto out = big_blur->deepCopy();
+    struct Local {
+        static inline void diff(const float& a, const float& b, float& result) {
+            result = a - b;
+        }
+    };
+    out->tree().combine(small_blur->deepCopy()->tree(), Local::diff);
+    return out;
+}
+
 int main()
 {
     // Initialize the OpenVDB library
@@ -142,10 +168,13 @@ int main()
         vector<openvdb::FloatGrid::Ptr> red_grids;
         vector<openvdb::FloatGrid::Ptr> blue_grids;
         vector<openvdb::FloatGrid::Ptr> green_grids;
+        vector<openvdb::FloatGrid::Ptr> alpha_grids;
+        openvdb::FloatGrid::Ptr cutoff;
         for (const auto & frame_dir : fs::directory_iterator(entry.path()))
         {
             // Parse filename to get color
             vector<float> color = getModelColors(frame_dir.path());
+	    std::cout << getModelName(frame_dir.path()) << std::endl;
 
             // Read file and make r, g, and b grids
             openvdb::io::File file(frame_dir.path());
@@ -157,24 +186,32 @@ int main()
             // std::stringstream name("./test");
             // name << frame_dir.path().filename() << volume->evalActiveVoxelBoundingBox().dim() << ".raw";
             // vdb2Raw(volume, name.str());
+	    if (getModelName(frame_dir.path()) == "capture_range") {
+                cutoff = volume;
+	    }
 
             // red_grids.push_back(volume);
             red_grids.push_back(swapValueCopy(volume, color[0]));
             green_grids.push_back(swapValueCopy(volume, color[1]));
             blue_grids.push_back(swapValueCopy(volume, color[2]));
+            alpha_grids.push_back(swapValueCopy(volume, color[3]));
         }
 
         // Combine grids into accumulator
+        // openvdb::FloatGrid::Ptr red = openvdb::tools::csgIntersectionCopy(*combineGrids(red_grids), *cutoff);
+        // openvdb::FloatGrid::Ptr green = openvdb::tools::csgIntersectionCopy(*combineGrids(green_grids), *cutoff);
+        // openvdb::FloatGrid::Ptr blue = openvdb::tools::csgIntersectionCopy(*combineGrids(blue_grids), *cutoff);
+        // openvdb::FloatGrid::Ptr alpha = openvdb::tools::csgIntersectionCopy(*combineGrids(alpha_grids), *cutoff);
         openvdb::FloatGrid::Ptr red = combineGrids(red_grids);
         openvdb::FloatGrid::Ptr green = combineGrids(green_grids);
         openvdb::FloatGrid::Ptr blue = combineGrids(blue_grids);
-
+        openvdb::FloatGrid::Ptr alpha = combineGrids(alpha_grids);
 
         string frame_dir = output_dir + entry.path().filename().string();
         fs::create_directory(frame_dir);
-        vector<float> kernel = {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
-        vdb2Raw(convolveX(red, kernel), frame_dir + "/red");    
-        vdb2Raw(convolveX(green, kernel), frame_dir + "/green");    
-        vdb2Raw(convolveX(blue, kernel), frame_dir + "/blue");    
+        vdb2Raw(red, frame_dir + "/red");
+        vdb2Raw(green, frame_dir + "/green");
+        vdb2Raw(blue, frame_dir + "/blue");
+        vdb2Raw(alpha, frame_dir + "/alpha");
     }
 }

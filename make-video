@@ -1,11 +1,15 @@
 #!/bin/sh
+current=$(pwd)
+mkdir /dev/shm/work
+ln -s /dev/shm/work ./work
+cd work
 loc=$(dirname "$0")
-blender -b "${1:-"example_scene.blend"}" -P $loc/blender_scene2vdb.py
+blender -b "$current/${1:-"example_scene.blend"}" -P $loc/blender_scene2vdb.py
 combiner
-rm -rf vdb
-mkdir -p "${2:-"bvp"}"
+mkdir -p "$current/${2:-"bvp"}"
 size=$(ls raw/0 | head -1 | grep -oE "[0-9]{1,4},[0-9]{1,4},[0-9]{1,4}")
 for ((i=0; i<60; i++)); do
-  node $loc/raw2bvp.js -m 1 -i "raw/${i}/red${size}.raw" -d ${size//\,/x} -f R8 -G false -m 2 -i "raw/$i/green${size}.raw" -d ${size//\,/x} -f R8 -G false -m 3 -i "raw/$i/blue${size}.raw" -d ${size//\,/x} -f R8 -G false -o "${2:-"bvp"}"/$i.bvp
+  node $loc/raw2bvp.js -m 1 -i "raw/${i}/red${size}.raw" -d ${size//\,/x} -f R8 -G false -m 2 -i "raw/$i/green${size}.raw" -d ${size//\,/x} -f R8 -G false -m 3 -i "raw/$i/blue${size}.raw" -d ${size//\,/x} -f R8 -G false -m 4 -i "raw/$i/alpha${size}.raw" -d ${size//\,/x} -f R8 -G false -o "$current/${2:-"bvp"}"/$i.bvp
 done
-rm -rf raw
+cd ..
+rm -rf /dev/shm/work work

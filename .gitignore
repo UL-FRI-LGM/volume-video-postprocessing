@@ -2,3 +2,6 @@
 model_vdb/*
 model_raw/*
 results
+result_volumes
+bvp.tar.gz
+vpt
