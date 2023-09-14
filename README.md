@@ -5,6 +5,9 @@ A repository containing code developed as part of the Bachelor thesis at the Uni
 The thesis is accessible at:
 [https://repozitorij.uni-lj.si/Dokument.php?id=174486]
 
+The accompanying repository of adapted Volumetric Path Tracer (developed by [terier](https://github.com/terier/vpt), and extended by [JernejCernelc](https://github.com/JernejCernelc/vpt)):
+[https://github.com/smufa/vpt]
+
 Bibtex:
 ```
 @thesis{Sluga2023,
